@@ -1,13 +1,83 @@
-"""Phone Number Intelligence Scanner"""
+"""
+Phone Number Intelligence Scanner
+
+Provides phone number validation, carrier lookup, geolocation, and reverse lookup
+using NumLookup API + free APIs and the open-source phonenumbers library.
+
+⭐ Primary Data Source:
+─────────────────────
+NumLookup API (https://www.numlookup.com)
+- Carrier/operator name
+- Line type detection
+- Comprehensive validation
+- Requires API key: NUMLOOKUP_KEY
+
+⭐ Fallback/Free Data Sources:
+─────────────────────────────
+1. phonenumbers library (no auth needed)
+   - Number parsing and validation
+   - International format conversion
+   - Phone type detection (mobile, landline, VoIP, etc.)
+   - Timezone and area detection
+
+2. MCC-MNC-Lookup (limited free calls)
+   - Operator/carrier lookup fallback
+   - Number type information
+
+3. AnyWho / Quicksearch (free web scraping)
+   - US reverse phone lookup (limited)
+
+🔧 Setup:
+─────────
+1. Set NUMLOOKUP_KEY in .env file
+2. API key format: num_live_XXXXXXXXXXXXXXXX
+
+📊 Response Data with NumLookup:
+─────────────────────────────────
+{
+  "phone": "+14159929960",
+  "parsed": {
+    "country_code": 1,
+    "national_number": 4159929960,
+    "country": "US",
+    "type": "mobile",
+    "valid": true,
+    "formatted": "+1 415-992-9960",
+    "e164": "+14159929960"
+  },
+  "carrier": {
+    "carrier": "AT&T",
+    "country": "US",
+    "country_code": "1",
+    "type": "mobile",
+    "is_valid": true,
+    "status": "found"
+  },
+  "geolocation": {
+    "area": "San Francisco, CA",
+    "timezone": "America/Los_Angeles",
+    "country_code": "US"
+  }
+}
+
+⚠️  Rate Limiting:
+──────────────────
+NumLookup API may have request limits based on your account plan.
+Implement caching for production environments.
+"""
 
 import requests
 import re
+import os
 from datetime import datetime
 import logging
 from phonenumbers import phonenumberutil
 import phonenumbers
 
 logger = logging.getLogger(__name__)
+
+# Load API key from environment
+NUMLOOKUP_KEY = os.getenv('NUMLOOKUP_KEY', '')
 
 class PhoneScanner:
     """Scan phone numbers for real geolocation and carrier data"""
@@ -46,19 +116,23 @@ class PhoneScanner:
             }
     
     def _clean_phone(self, phone: str) -> str:
-        """Clean and validate phone number"""
+        """Clean and validate phone number - handles international formats"""
         try:
-            # Remove common separators
-            cleaned = re.sub(r'[\s\-\(\)\+\.]', '', phone)
-            # Ensure it's digits only
-            if not re.match(r'^\+?1?\d{10,15}$', cleaned):
-                return None
-            # Add + if missing
-            if not cleaned.startswith('+'):
-                if cleaned.startswith('1'):
+            # Remove common separators but keep + prefix
+            if phone.startswith('+'):
+                # International format - preserve +
+                cleaned = '+' + re.sub(r'[\s\-\(\)\.]', '', phone[1:])
+            else:
+                # Domestic format - just clean
+                cleaned = re.sub(r'[\s\-\(\)\.]', '', phone)
+                # If it's all digits and looks international (10-15 digits), add +
+                if re.match(r'^\d{10,15}$', cleaned):
                     cleaned = '+' + cleaned
-                else:
-                    cleaned = '+1' + cleaned
+            
+            # Verify format: + followed by 10-15 digits
+            if not re.match(r'^\+\d{10,15}$', cleaned):
+                return None
+            
             return cleaned
         except:
             return None
@@ -105,133 +179,193 @@ class PhoneScanner:
             return 'unknown'
     
     def _get_carrier_info(self, phone: str) -> dict:
-        """Get carrier information from numlookup API"""
-        try:
-            # Using free numverify-like API
-            url = f"https://api.numverify.com/validate?number={phone}&access_key=free"
-            resp = requests.get(url, timeout=self.timeout)
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    'carrier': data.get('carrier', 'Unknown'),
-                    'line_type': data.get('line_type', 'Unknown'),
-                    'country_name': data.get('country_name'),
-                    'country_code': data.get('country_code'),
-                    'timezone': data.get('timezone'),
+        """Get carrier information from NumLookup API (primary) + fallback APIs"""
+        
+        # Try NumLookup API first (paid, much better data)
+        if NUMLOOKUP_KEY:
+            try:
+                # Format: +1234567890 or 1234567890
+                clean_phone = phone if phone.startswith('+') else '+' + phone.lstrip('+')
+                
+                url = f"https://api.numlookupapi.com/v1/validate/{clean_phone}"
+                params = {
+                    'apikey': NUMLOOKUP_KEY
                 }
-        except:
-            pass
+                
+                resp = requests.get(url, params=params, timeout=self.timeout)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get('valid'):
+                        return {
+                            'carrier': data.get('carrier', 'Unknown'),
+                            'country': data.get('country', 'Unknown'),
+                            'country_code': data.get('country_code'),
+                            'line_type': data.get('line_type'),
+                            'is_valid': data.get('valid', True),
+                            'status': 'found'
+                        }
+            except Exception as e:
+                logger.debug(f"NumLookup API error: {str(e)}")
         
-        # Fallback: Try telnyx API (free tier)
-        try:
-            url = f"https://api.telnyx.com/v2/number_lookup?phone_number={phone}"
-            resp = requests.get(url, timeout=self.timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                if 'data' in data:
-                    return {
-                        'carrier': data['data'].get('carrier_name', 'Unknown'),
-                        'line_type': data['data'].get('line_type', 'Unknown'),
-                        'country': data['data'].get('country_code'),
-                    }
-        except:
-            pass
-        
-        return {'status': 'carrier_lookup_unavailable'}
-    
-    def _get_geolocation(self, phone: str) -> dict:
-        """Get geolocation for phone number"""
+        # Fallback: Try MCC-MNC-Lookup (free, limited)
         try:
             parsed = phonenumbers.parse(phone, None)
-            geocoder = phonenumbers.geocoder.description_for_number(parsed, "en")
+            country = phonenumbers.region_code_for_number(parsed)
+            clean_phone = phone.replace('+', '').replace(' ', '').replace('-', '')
             
-            # Get timezone
-            timezone = phonenumbers.timezone.time_zones_for_number(parsed)
+            url = "https://mcc-mnc-lookup.com/api"
+            params = {
+                'number': clean_phone,
+                'country': country
+            }
             
-            # Try to get coordinates via area code / region
-            area = phonenumbers.area_code_for_number(parsed)
-            
+            resp = requests.get(url, params=params, timeout=self.timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('data'):
+                    carrier_data = data.get('data', {})
+                    return {
+                        'carrier': carrier_data.get('operator') or carrier_data.get('carrier') or 'Unknown',
+                        'country': country,
+                        'country_code': parsed.country_code,
+                        'number_type': self._get_phone_type(parsed),
+                        'status': 'found'
+                    }
+        except Exception as e:
+            logger.debug(f"MCC-MNC lookup error: {str(e)}")
+        
+        # Fallback: Return parsed number metadata
+        try:
+            parsed = phonenumbers.parse(phone, None)
             return {
-                'area': geocoder,
-                'timezone': timezone[0] if timezone else 'Unknown',
-                'region': geocoder,
+                'country': phonenumbers.region_code_for_number(parsed),
+                'country_code': parsed.country_code,
+                'number_type': self._get_phone_type(parsed),
+                'status': 'parsed_only',
+                'note': 'External APIs unavailable; using local validation only'
             }
         except Exception as e:
+            logger.debug(f"Fallback parsing failed: {str(e)}")
+            return {
+                'status': 'carrier_lookup_unavailable',
+                'note': 'No carrier data available'
+            }
+    
+    def _get_geolocation(self, phone: str) -> dict:
+        """Get geolocation for phone number using multiple methods"""
+        try:
+            parsed = phonenumbers.parse(phone, None)
+            
+            # Get area description from phonenumbers library
+            try:
+                from phonenumbers import geocoder
+                area = geocoder.description_for_number(parsed, "en")
+            except:
+                area = None
+            
+            # Get timezone
+            try:
+                from phonenumbers import timezone
+                timezones = timezone.time_zones_for_number(parsed)
+                tz = timezones[0] if timezones else 'Unknown'
+            except:
+                tz = 'Unknown'
+            
+            # Get country code
+            country = phonenumbers.region_code_for_number(parsed)
+            
+            result = {
+                'area': area or f"Country code {parsed.country_code}",
+                'region': area or 'Unknown',
+                'timezone': tz,
+                'country_code': country,
+                'country_dialing_code': f"+{parsed.country_code}"
+            }
+            
+            return result
+        except Exception as e:
             logger.debug(f"Geolocation error: {str(e)}")
-            return {}
+            return {'status': 'geolocation_unavailable', 'error': str(e)}
     
     def _reverse_lookup(self, phone: str) -> dict:
-        """Reverse lookup phone number"""
+        """Reverse lookup phone number from free sources"""
         try:
-            # Try Google Voice API lookup (free)
-            url = "https://www.truecaller.com/api/v1/searchPhoneNumber"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            params = {'phoneNumber': phone, 'countryCode': 'US'}
+            clean_phone = phone.replace('+', '').lstrip('1') if phone.startswith(('+1', '1')) else phone.replace('+', '')
+            
+            # Try AnyWho free API (US numbers)
+            url = f"https://www.anywho.com/phonelookup"
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            params = {'phonenumber': clean_phone}
             
             resp = requests.get(url, headers=headers, params=params, timeout=self.timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                if 'data' in data:
-                    return {
-                        'name': data['data'].get('name'),
-                        'type': data['data'].get('type'),
-                        'spam_status': data['data'].get('spamStatus'),
-                    }
-        except:
-            pass
-        
-        # Try reverse phone lookup API
-        try:
-            url = f"https://freeapi.ipwhois.io/phone_lookup?phone={phone}"
-            resp = requests.get(url, timeout=self.timeout)
-            if resp.status_code == 200:
-                data = resp.json()
+            if resp.status_code == 200 and 'person' in resp.text.lower():
+                # Basic scraping to detect if result found
                 return {
-                    'name': data.get('name'),
-                    'address': data.get('address'),
-                    'type': data.get('type'),
+                    'name': 'Found (name hidden)',
+                    'status': 'found_limited',
+                    'note': 'Detailed name lookup requires active subscription'
                 }
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"AnyWho reverse lookup failed: {str(e)}")
         
-        return {'status': 'reverse_lookup_unavailable'}
+        # Fallback: Try free reverse lookup aggregator
+        try:
+            url = f"https://quicksearch.com.au/phone/{clean_phone}"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            resp = requests.get(url, headers=headers, timeout=self.timeout)
+            
+            if resp.status_code == 200:
+                # Check if we get result
+                if 'not found' not in resp.text.lower():
+                    return {
+                        'status': 'found_limited',
+                        'note': 'Reverse lookup available (limited free data)'
+                    }
+        except Exception as e:
+            logger.debug(f"Reverse lookup attempt 2 failed: {str(e)}")
+        
+        return {
+            'status': 'reverse_lookup_unavailable',
+            'note': 'Most reverse lookups require paid subscription or API key'
+        }
     
     def ping(self, phone: str) -> dict:
         """
-        Ping/probe phone number for activity
-        Check if number is active and can receive messages
+        Check phone number validity and carrier status
+        Returns validation info and whether carrier data is available
         """
         try:
+            phone = self._clean_phone(phone)
+            if not phone:
+                return {'error': 'Invalid phone number format', 'status': 'failed'}
+            
             result = {
                 'phone': phone,
                 'timestamp': datetime.utcnow().isoformat(),
-                'ping_status': 'attempted',
             }
             
-            # Parse number first
+            # Parse number for validation
             parsed = phonenumbers.parse(phone, None)
-            valid = phonenumbers.is_valid_number(parsed)
+            result['valid'] = phonenumbers.is_valid_number(parsed)
+            result['possible'] = phonenumbers.is_possible_number(parsed)
             
-            result['valid_number'] = valid
+            # Get carrier info
+            carrier = self._get_carrier_info(phone)
+            result['carrier'] = carrier
             
-            if valid:
-                # Check if number is reachable (possible)
-                result['possible'] = phonenumbers.is_possible_number(parsed)
-                
-                # Check carrier status
-                carrier = self._get_carrier_info(phone)
-                result['carrier'] = carrier
-                
-                # Determine if likely active (if carrier responds = active)
-                result['likely_active'] = bool(carrier.get('carrier') and carrier.get('carrier') != 'Unknown')
+            # Determine if number is likely active (has carrier data)
+            has_carrier_data = (
+                carrier.get('status') == 'found' or 
+                (carrier.get('carrier') and carrier.get('carrier') != 'Unknown')
+            )
+            result['likely_active'] = has_carrier_data
+            result['status'] = 'ok'
             
             return result
         except Exception as e:
             logger.error(f"Ping error: {str(e)}")
             return {
                 'error': str(e),
-                'status': 'ping_failed'
+                'phone': phone if 'phone' in locals() else 'unknown',
+                'status': 'failed'
             }

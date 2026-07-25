@@ -536,6 +536,250 @@ def osint_sweep():
         logger.error(f"Sweep error: {str(e)}")
         return jsonify({'target_ip': ip, 'status': 'error', 'cidr': 24}), 200
 
+# ═══════════════════════════════════════════════════════════════
+# PEOPLE/NAME OSINT ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/scan/people', methods=['GET'])
+@require_auth
+def scan_people():
+    """
+    Comprehensive people search - name/email/username lookup
+    Query params: target, type (auto/email/name/username/phone), key
+    """
+    try:
+        target = request.args.get('target', '').strip()
+        query_type = request.args.get('type', 'auto').strip()
+        
+        if not target:
+            return jsonify({'error': 'Target required'}), 400
+        
+        from scanners.people_scanner import PeopleScanner
+        scanner = PeopleScanner()
+        result = scanner.scan(target, query_type)
+        
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"People scan error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/osint/name', methods=['GET'])
+@require_auth
+def osint_name():
+    """Name-based OSINT lookup"""
+    try:
+        name = request.args.get('name', '').strip()
+        if not name:
+            return jsonify({'error': 'Name required'}), 400
+        
+        from scanners.people_scanner import PeopleScanner
+        scanner = PeopleScanner()
+        result = scanner.scan(name, 'name')
+        
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Name lookup error: {str(e)}")
+        return jsonify({'error': str(e), 'name': name}), 500
+
+@app.route('/api/osint/email', methods=['GET'])
+@require_auth
+def osint_email():
+    """Email-based OSINT lookup - breaches, validation, associations"""
+    try:
+        email = request.args.get('email', '').strip()
+        if not email:
+            return jsonify({'error': 'Email required'}), 400
+        
+        from scanners.people_scanner import PeopleScanner
+        from scanners.osint_utils import OSINTUtils
+        
+        scanner = PeopleScanner()
+        people_data = scanner.scan(email, 'email')
+        
+        # Also get breach and associated accounts
+        breaches = OSINTUtils.check_data_breaches(email)
+        associated = PeopleScanner.find_associated_accounts(email)
+        
+        result = {
+            'email': email,
+            'people_data': people_data,
+            'breaches': breaches,
+            'associated_accounts': associated,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Email lookup error: {str(e)}")
+        return jsonify({'error': str(e), 'email': email}), 500
+
+@app.route('/api/osint/breaches', methods=['GET'])
+@require_auth
+def osint_breaches():
+    """Data breach lookup endpoint"""
+    try:
+        query = request.args.get('query', '').strip()
+        if not query:
+            return jsonify({'error': 'Email or username required'}), 400
+        
+        from scanners.people_scanner import PeopleScanner
+        scanner = PeopleScanner()
+        result = scanner._check_breaches(query)
+        
+        return jsonify({
+            'query': query,
+            'breaches': result,
+            'timestamp': datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Breach lookup error: {str(e)}")
+        return jsonify({'error': str(e), 'query': query}), 500
+
+@app.route('/api/osint/username', methods=['GET'])
+@require_auth
+def osint_username():
+    """Username-based OSINT - find accounts and check availability"""
+    try:
+        username = request.args.get('username', '').strip()
+        if not username:
+            return jsonify({'error': 'Username required'}), 400
+        
+        from scanners.people_scanner import PeopleScanner
+        
+        scanner = PeopleScanner()
+        people_data = scanner.scan(username, 'username')
+        availability = PeopleScanner.check_username_availability(username)
+        
+        result = {
+            'username': username,
+            'people_data': people_data,
+            'platform_availability': availability,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Username lookup error: {str(e)}")
+        return jsonify({'error': str(e), 'username': username}), 500
+
+@app.route('/api/osint/associated', methods=['GET'])
+@require_auth
+def osint_associated():
+    """Find accounts associated with email"""
+    try:
+        email = request.args.get('email', '').strip()
+        if not email:
+            return jsonify({'error': 'Email required'}), 400
+        
+        from scanners.people_scanner import PeopleScanner
+        result = PeopleScanner.find_associated_accounts(email)
+        
+        return jsonify({
+            'email': email,
+            'associated_accounts': result,
+            'timestamp': datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Associated accounts lookup error: {str(e)}")
+        return jsonify({'error': str(e), 'email': email}), 500
+
+@app.route('/api/osint/virustotal', methods=['GET'])
+@require_auth
+def osint_virustotal():
+    """VirusTotal domain/IP reputation endpoint"""
+    try:
+        query = request.args.get('query', '').strip()
+        if not query:
+            return jsonify({'error': 'Domain or IP required'}), 400
+        
+        virustotal_key = os.getenv('VIRUSTOTAL_KEY', '')
+        if not virustotal_key:
+            return jsonify({'error': 'VirusTotal key not configured'}), 500
+        
+        # Determine if it's a domain or IP
+        if query.replace('.', '').isdigit() and query.count('.') == 3:
+            endpoint = f"https://www.virustotal.com/api/v3/ip_addresses/{query}"
+        else:
+            endpoint = f"https://www.virustotal.com/api/v3/domains/{query}"
+        
+        headers = {'x-apikey': virustotal_key}
+        resp = requests.get(endpoint, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            attrs = data.get('data', {}).get('attributes', {})
+            
+            result = {
+                'query': query,
+                'last_analysis_stats': attrs.get('last_analysis_stats'),
+                'reputation': attrs.get('reputation'),
+                'threat_names': attrs.get('threat_names', []),
+                'categories': attrs.get('categories'),
+                'status': 'found',
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            return jsonify(result)
+        elif resp.status_code == 404:
+            return jsonify({'query': query, 'status': 'not_found'}), 200
+        else:
+            return jsonify({'error': f'VirusTotal API error: {resp.status_code}'}), 500
+    
+    except Exception as e:
+        logger.error(f"VirusTotal lookup error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/osint/abuseipdb', methods=['GET'])
+@require_auth
+def osint_abuseipdb():
+    """AbuseIPDB IP reputation endpoint"""
+    try:
+        ip = request.args.get('ip', '').strip()
+        if not ip:
+            return jsonify({'error': 'IP address required'}), 400
+        
+        abuseipdb_key = os.getenv('ABUSEIPDB_KEY', '')
+        if not abuseipdb_key:
+            return jsonify({'error': 'AbuseIPDB key not configured'}), 500
+        
+        url = f"https://api.abuseipdb.com/api/v2/check"
+        headers = {
+            'Key': abuseipdb_key,
+            'Accept': 'application/json'
+        }
+        params = {
+            'ipAddress': ip,
+            'maxAgeInDays': 90,
+            'verbose': True
+        }
+        
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            ip_data = data.get('data', {})
+            
+            result = {
+                'ip': ip,
+                'abuse_confidence_score': ip_data.get('abuseConfidenceScore'),
+                'total_reports': ip_data.get('totalReports'),
+                'is_whitelisted': ip_data.get('isWhitelisted'),
+                'is_blacklisted': ip_data.get('isBlacklisted'),
+                'usage_type': ip_data.get('usageType'),
+                'isp': ip_data.get('isp'),
+                'domain': ip_data.get('domain'),
+                'country_code': ip_data.get('countryCode'),
+                'reports': ip_data.get('reports', [])[:10],  # Last 10 reports
+                'status': 'found',
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            return jsonify(result)
+        else:
+            return jsonify({'error': f'AbuseIPDB API error: {resp.status_code}'}), 500
+    
+    except Exception as e:
+        logger.error(f"AbuseIPDB lookup error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Endpoint not found'}), 404

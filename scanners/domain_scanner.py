@@ -1,25 +1,40 @@
-"""Domain DNS and WHOIS Scanner"""
+"""Domain DNS and WHOIS Scanner
+
+Uses multiple APIs:
+- dns.resolver: DNS record lookups (free)
+- whois: WHOIS lookups (free)
+- IPQualityScore: URL/domain reputation, malware detection
+
+Requires:
+- IPQUALITYSCORE_KEY: https://www.ipqualityscore.com
+"""
 
 import dns.resolver
 import dns.rdatatype
 import whois as whois_lib
+import requests
+import os
 from datetime import datetime
 import logging
 import socket
 
 logger = logging.getLogger(__name__)
 
+# Load API key from environment
+IPQUALITYSCORE_KEY = os.getenv('IPQUALITYSCORE_KEY', '')
+
 class DomainScanner:
-    """Scan domains for DNS records and WHOIS information"""
+    """Scan domains for DNS records, WHOIS information, and reputation"""
     
     def __init__(self):
         self.dns_resolver = dns.resolver.Resolver()
         self.dns_resolver.timeout = 5
         self.dns_resolver.lifetime = 10
+        self.timeout = 10
         
     def scan(self, domain: str) -> dict:
         """
-        Scan domain for DNS and WHOIS data
+        Scan domain for DNS, WHOIS, and reputation data
         """
         try:
             result = {
@@ -28,6 +43,7 @@ class DomainScanner:
                 'dns': self._get_dns_records(domain),
                 'whois': self._get_whois(domain),
                 'ip': self._get_ip(domain),
+                'reputation': self._get_domain_reputation(domain),
             }
             return result
         except Exception as e:
@@ -144,6 +160,68 @@ class DomainScanner:
                 return dns_info
             except:
                 return {'domain': domain, 'error': str(e), 'status': 'error'}
+    
+    def _get_domain_reputation(self, domain: str) -> dict:
+        """Get domain/URL reputation using IPQualityScore and VirusTotal"""
+        reputation = {}
+        
+        # Try IPQualityScore first
+        if IPQUALITYSCORE_KEY:
+            try:
+                url = f"https://www.ipqualityscore.com/api/json/url/{IPQUALITYSCORE_KEY}/{domain}"
+                
+                resp = requests.get(url, timeout=self.timeout)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    
+                    reputation['ipqualityscore'] = {
+                        'domain': domain,
+                        'fraud_score': data.get('fraud_score'),  # 0-100
+                        'is_suspicious': data.get('suspicious'),
+                        'phishing': data.get('phishing'),
+                        'malware': data.get('malware'),
+                        'parkingpage': data.get('parkingpage'),
+                        'spyware': data.get('spyware'),
+                        'dns_valid': data.get('dns_valid'),
+                        'domain_age': data.get('domain_age'),  # in seconds
+                        'domain_rank': data.get('domain_rank'),
+                        'status': 'found'
+                    }
+            except Exception as e:
+                logger.debug(f"IPQualityScore error: {str(e)}")
+        
+        # Try VirusTotal
+        virustotal_key = os.getenv('VIRUSTOTAL_KEY', '')
+        if virustotal_key:
+            try:
+                vt_url = f"https://www.virustotal.com/api/v3/domains/{domain}"
+                headers = {'x-apikey': virustotal_key}
+                
+                resp = requests.get(vt_url, headers=headers, timeout=self.timeout)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    
+                    # Extract attributes
+                    attrs = data.get('data', {}).get('attributes', {})
+                    
+                    reputation['virustotal'] = {
+                        'domain': domain,
+                        'last_dns_records': attrs.get('last_dns_records'),
+                        'last_https_certificate': attrs.get('last_https_certificate'),
+                        'last_analysis_stats': attrs.get('last_analysis_stats'),  # {malicious, suspicious, undetected, harmless}
+                        'last_analysis_results': len(attrs.get('last_analysis_results', {})),
+                        'reputation': attrs.get('reputation'),
+                        'threat_names': attrs.get('threat_names', []),
+                        'status': 'found'
+                    }
+            except Exception as e:
+                logger.debug(f"VirusTotal error: {str(e)}")
+        
+        if reputation:
+            reputation['status'] = 'found'
+            return reputation
+        
+        return {'status': 'api_key_missing', 'note': 'Set IPQUALITYSCORE_KEY or VIRUSTOTAL_KEY in .env'}
     
     @staticmethod
     def _redact_email(email):

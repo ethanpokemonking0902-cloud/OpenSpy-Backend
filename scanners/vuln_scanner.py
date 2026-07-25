@@ -1,21 +1,34 @@
-"""Vulnerability Scanner"""
+"""Vulnerability Scanner
+
+Uses multiple APIs:
+- Shodan: IoT/service enumeration, exposed services
+- CIRCL CVE: CVE/vulnerability search
+- NVD: CVE details
+
+Requires:
+- SHODAN_KEY: https://www.shodan.io (for service enumeration)
+"""
 
 import requests
+import os
 from datetime import datetime
 import logging
 import json
 
 logger = logging.getLogger(__name__)
 
+# Load API keys from environment
+SHODAN_KEY = os.getenv('SHODAN_KEY', '')
+
 class VulnScanner:
-    """Check for known vulnerabilities"""
+    """Check for known vulnerabilities and exposed services"""
     
     def __init__(self):
         self.timeout = 10
     
     def scan(self, target: str) -> dict:
         """
-        Check for known vulnerabilities
+        Check for known vulnerabilities and exposed services
         """
         try:
             # Ensure URL has scheme for misconfiguration checks
@@ -28,6 +41,7 @@ class VulnScanner:
                 'target': target,
                 'timestamp': datetime.utcnow().isoformat(),
                 'vulnerabilities': self._check_vulns(check_target),
+                'exposed_services': self._check_exposed_services(target),
                 'common_issues': self._check_common_issues(check_target),
             }
             return result
@@ -39,6 +53,64 @@ class VulnScanner:
                 'timestamp': datetime.utcnow().isoformat()
             }
     
+    def _check_exposed_services(self, target: str) -> dict:
+        """Check for exposed services using Shodan"""
+        if not SHODAN_KEY:
+            return {'status': 'api_key_missing', 'note': 'Set SHODAN_KEY in .env'}
+        
+        try:
+            # Extract IP or hostname
+            import socket
+            
+            # Try to get IP
+            try:
+                if target.startswith('http'):
+                    host = target.split('/')[2]
+                else:
+                    host = target
+                
+                ip = socket.gethostbyname(host)
+            except:
+                return {'status': 'resolution_failed', 'error': f'Could not resolve {target}'}
+            
+            # Query Shodan
+            url = f"https://api.shodan.io/shodan/host/{ip}"
+            params = {
+                'key': SHODAN_KEY
+            }
+            
+            resp = requests.get(url, params=params, timeout=self.timeout)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                
+                services = []
+                for item in data.get('data', []):
+                    services.append({
+                        'port': item.get('port'),
+                        'service': item.get('_shodan', {}).get('module', 'unknown'),
+                        'product': item.get('product'),
+                        'version': item.get('version'),
+                        'severity': 'high' if item.get('vulns') else 'medium'
+                    })
+                
+                return {
+                    'ip': ip,
+                    'hostname': data.get('hostnames', []),
+                    'services': services,
+                    'service_count': len(services),
+                    'vulns': data.get('vulns', [])[:5],  # Top 5 vulns
+                    'status': 'found'
+                }
+            elif resp.status_code == 404:
+                return {'ip': ip, 'status': 'not_found', 'services': []}
+            else:
+                return {'status': 'error', 'error': f'Shodan returned {resp.status_code}'}
+        
+        except Exception as e:
+            logger.debug(f"Shodan service check error: {str(e)}")
+            return {'status': 'error', 'error': str(e)}
+    
     def _check_vulns(self, target: str) -> dict:
         """Check vulnerabilities using public APIs"""
         vulns = {
@@ -48,8 +120,14 @@ class VulnScanner:
         }
         
         try:
-            # Check Shodan (if API key available - free tier)
-            cves = self._check_cve_search(target)
+            # Extract domain for CVE search
+            if target.startswith('http'):
+                domain = target.split('/')[2]
+            else:
+                domain = target
+            
+            # Check CIRCL CVE API
+            cves = self._check_cve_search(domain)
             vulns['known_cves'] = cves
             
             # Check common misconfigurations
@@ -79,6 +157,7 @@ class VulnScanner:
                             'summary': cve.get('summary', '')[:100],
                             'cvss': cve.get('cvss'),
                             'published': cve.get('published'),
+                            'severity': 'critical' if cve.get('cvss', 0) >= 9 else 'high' if cve.get('cvss', 0) >= 7 else 'medium'
                         })
         except Exception as e:
             logger.debug(f"CVE search error: {str(e)}")
@@ -102,6 +181,10 @@ class VulnScanner:
                 '/.htaccess',
                 '/admin',
                 '/wp-admin',
+                '/.aws/credentials',
+                '/backup',
+                '/old',
+                '/test',
             ]
             
             headers = {
@@ -111,13 +194,14 @@ class VulnScanner:
             for path in common_paths:
                 try:
                     url = f"{target}{path}"
-                    resp = requests.head(url, headers=headers, timeout=5, allow_redirects=False)
+                    resp = requests.head(url, headers=headers, timeout=3, allow_redirects=False)
                     
                     if resp.status_code in [200, 301, 302]:
+                        severity = 'critical' if path in ['/.env', '/.aws/credentials', '/config.php', '/.git/config'] else 'high' if path in ['/admin', '/wp-admin'] else 'low'
                         misconfigs.append({
                             'path': path,
                             'status': resp.status_code,
-                            'severity': 'high' if path in ['/.env', '/config.php', '/.git/config'] else 'low',
+                            'severity': severity,
                             'description': f"Accessible path: {path}"
                         })
                 except:
@@ -132,11 +216,11 @@ class VulnScanner:
         issues = {
             'ssl_issues': [],
             'header_issues': [],
-            'known_vulnerabilities': [],
+            'security_findings': [],
         }
         
         try:
-            # Check SSL via crt.sh
+            # Extract domain
             if target.startswith('http'):
                 target_domain = target.split('/')[2]
             else:
@@ -145,37 +229,36 @@ class VulnScanner:
             # Check for SSL certificate issues
             try:
                 resp = requests.get(f"https://{target_domain}", verify=False, timeout=5)
-                issues['header_issues'].append({
+                issues['ssl_issues'].append({
                     'type': 'https',
                     'status': 'ok' if resp.status_code < 400 else 'warning',
                     'message': f"HTTPS available with status {resp.status_code}"
                 })
-            except:
+            except Exception as e:
                 issues['ssl_issues'].append({
                     'type': 'https_unavailable',
                     'severity': 'high',
-                    'message': 'HTTPS not available'
+                    'message': f'HTTPS not available: {str(e)}'
                 })
             
             # Check for security headers
             try:
                 resp = requests.head(target, timeout=5, allow_redirects=True)
                 
-                security_headers = [
-                    'Strict-Transport-Security',
-                    'X-Frame-Options',
-                    'X-Content-Type-Options',
-                    'Content-Security-Policy'
-                ]
+                security_headers = {
+                    'Strict-Transport-Security': 'high',
+                    'X-Frame-Options': 'medium',
+                    'X-Content-Type-Options': 'medium',
+                    'Content-Security-Policy': 'medium'
+                }
                 
-                missing_headers = [h for h in security_headers if h not in resp.headers]
-                
-                if missing_headers:
-                    issues['header_issues'].append({
-                        'type': 'missing_security_headers',
-                        'severity': 'medium',
-                        'headers': missing_headers
-                    })
+                for header, severity in security_headers.items():
+                    if header not in resp.headers:
+                        issues['header_issues'].append({
+                            'type': f'missing_{header.lower().replace("-", "_")}',
+                            'severity': severity,
+                            'message': f'Missing security header: {header}'
+                        })
             except Exception as e:
                 logger.debug(f"Header check error: {str(e)}")
             

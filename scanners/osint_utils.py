@@ -1,9 +1,24 @@
-"""OSINT Utility Functions - Shared across scanners"""
+"""OSINT Utility Functions - Shared across scanners
+
+Uses multiple APIs:
+- Shodan InternetDB: Port/service enumeration (free)
+- IPQualityScore: Email validation, URL malware detection, leak detection
+- HaveIBeenPwned: Data breach checking (free)
+- GitHub API: User reconnaissance (free)
+- NVD: CVE vulnerability details (free)
+
+Requires:
+- IPQUALITYSCORE_KEY: https://www.ipqualityscore.com
+"""
 
 import requests
+import os
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Load API key from environment
+IPQUALITYSCORE_KEY = os.getenv('IPQUALITYSCORE_KEY', '')
 
 class OSINTUtils:
     """Shared OSINT functions"""
@@ -24,6 +39,72 @@ class OSINTUtils:
             return {'ip': ip, 'ports': [], 'hostnames': [], 'cpes': [], 'vulns': [], 'tags': [], 'status': 'unavailable'}
     
     @staticmethod
+    def validate_email(email: str) -> dict:
+        """Validate email using IPQualityScore"""
+        if not IPQUALITYSCORE_KEY:
+            return {'email': email, 'status': 'api_key_missing', 'note': 'Set IPQUALITYSCORE_KEY in .env'}
+        
+        try:
+            url = f"https://www.ipqualityscore.com/api/json/email/{IPQUALITYSCORE_KEY}/{email}"
+            
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                
+                return {
+                    'email': email,
+                    'is_valid': data.get('is_valid'),
+                    'is_disposable': data.get('is_disposable'),
+                    'is_deliverable': data.get('is_deliverable'),
+                    'fraud_score': data.get('fraud_score'),  # 0-100
+                    'risky': data.get('risky'),
+                    'is_leaked': data.get('is_leaked'),
+                    'is_smtp_valid': data.get('is_smtp_valid'),
+                    'bounce_type': data.get('bounce_type'),
+                    'status': 'found'
+                }
+            return {'email': email, 'status': 'error', 'error': f'API returned {resp.status_code}'}
+        except Exception as e:
+            logger.debug(f"Email validation error: {str(e)}")
+            return {'email': email, 'status': 'error', 'error': str(e)}
+    
+    @staticmethod
+    def check_url_malware(url: str) -> dict:
+        """Check URL for malware using IPQualityScore"""
+        if not IPQUALITYSCORE_KEY:
+            return {'url': url, 'status': 'api_key_missing', 'note': 'Set IPQUALITYSCORE_KEY in .env'}
+        
+        try:
+            # Extract domain from URL
+            from urllib.parse import urlparse
+            parsed = urlparse(url if url.startswith('http') else f'https://{url}')
+            domain = parsed.netloc.replace('www.', '')
+            
+            api_url = f"https://www.ipqualityscore.com/api/json/url/{IPQUALITYSCORE_KEY}/{domain}"
+            
+            resp = requests.get(api_url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                
+                return {
+                    'url': url,
+                    'domain': domain,
+                    'fraud_score': data.get('fraud_score'),  # 0-100
+                    'is_suspicious': data.get('suspicious'),
+                    'phishing': data.get('phishing'),
+                    'malware': data.get('malware'),
+                    'parkingpage': data.get('parkingpage'),
+                    'spyware': data.get('spyware'),
+                    'dns_valid': data.get('dns_valid'),
+                    'domain_rank': data.get('domain_rank'),
+                    'status': 'found'
+                }
+            return {'url': url, 'status': 'error', 'error': f'API returned {resp.status_code}'}
+        except Exception as e:
+            logger.debug(f"URL malware check error: {str(e)}")
+            return {'url': url, 'status': 'error', 'error': str(e)}
+    
+    @staticmethod
     def get_threat_intel(query: str) -> dict:
         """Get threat intelligence from multiple sources"""
         threats = {}
@@ -38,9 +119,63 @@ class OSINTUtils:
             else:
                 threats['type'] = 'unknown'
             
-            # Return availability status
-            threats['virustotal'] = '—'
-            threats['abuseipdb'] = '—'
+            # Try VirusTotal if API key available
+            virustotal_key = os.getenv('VIRUSTOTAL_KEY', '')
+            if virustotal_key:
+                try:
+                    if threats['type'] == 'domain':
+                        vt_url = f"https://www.virustotal.com/api/v3/domains/{query}"
+                    elif threats['type'] == 'ip':
+                        vt_url = f"https://www.virustotal.com/api/v3/ip_addresses/{query}"
+                    else:
+                        vt_url = None
+                    
+                    if vt_url:
+                        headers = {'x-apikey': virustotal_key}
+                        resp = requests.get(vt_url, headers=headers, timeout=10)
+                        
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            attrs = data.get('data', {}).get('attributes', {})
+                            
+                            threats['virustotal'] = {
+                                'status': 'found',
+                                'last_analysis_stats': attrs.get('last_analysis_stats'),
+                                'reputation': attrs.get('reputation'),
+                                'threat_names': attrs.get('threat_names', []),
+                            }
+                        else:
+                            threats['virustotal'] = '—'
+                except Exception as e:
+                    logger.debug(f"VirusTotal threat intel error: {str(e)}")
+                    threats['virustotal'] = '—'
+            else:
+                threats['virustotal'] = '—'
+            
+            # AbuseIPDB for IPs
+            abuseipdb_key = os.getenv('ABUSEIPDB_KEY', '')
+            if abuseipdb_key and threats['type'] == 'ip':
+                try:
+                    url = f"https://api.abuseipdb.com/api/v2/check"
+                    headers = {'Key': abuseipdb_key, 'Accept': 'application/json'}
+                    params = {'ipAddress': query, 'maxAgeInDays': 90}
+                    
+                    resp = requests.get(url, headers=headers, params=params, timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get('data'):
+                            threats['abuseipdb'] = {
+                                'status': 'found',
+                                'abuse_confidence_score': data['data'].get('abuseConfidenceScore'),
+                                'total_reports': data['data'].get('totalReports'),
+                            }
+                        else:
+                            threats['abuseipdb'] = '—'
+                except:
+                    threats['abuseipdb'] = '—'
+            else:
+                threats['abuseipdb'] = '—'
+            
             threats['urlscan'] = '—'
             threats['status'] = 'ready'
         except Exception as e:
