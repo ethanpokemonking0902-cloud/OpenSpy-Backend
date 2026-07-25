@@ -386,10 +386,10 @@ def osint_dns():
         scanner = DomainScanner()
         result = scanner._get_dns_records(domain)
         
-        return jsonify({'domain': domain, 'dns': result})
+        return jsonify({'domain': domain, 'dns': result, 'status': 'ok'})
     except Exception as e:
         logger.error(f"DNS lookup error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'domain': domain, 'dns': {'A': [], 'AAAA': [], 'MX': [], 'NS': [], 'TXT': [], 'CNAME': [], 'SOA': [], 'SRV': []}, 'status': 'error', 'error': '—'}), 200
 
 @app.route('/api/osint/threats', methods=['GET'])
 @require_auth
@@ -403,10 +403,10 @@ def osint_threats():
         from scanners.osint_utils import OSINTUtils
         result = OSINTUtils.get_threat_intel(query)
         
-        return jsonify({'query': query, 'threats': result})
+        return jsonify({'query': query, 'threats': result, 'status': 'ok'})
     except Exception as e:
         logger.error(f"Threat intel error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'query': query, 'threats': {'status': 'error', 'virustotal': '—', 'abuseipdb': '—', 'urlscan': '—'}}), 200
 
 @app.route('/api/osint/shodan', methods=['GET'])
 @require_auth
@@ -420,10 +420,10 @@ def osint_shodan():
         from scanners.osint_utils import OSINTUtils
         result = OSINTUtils.get_shodan_data(ip)
         
-        return jsonify({'ip': ip, 'shodan': result})
+        return jsonify({'ip': ip, 'shodan': result, 'status': 'ok'})
     except Exception as e:
         logger.error(f"Shodan lookup error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'ip': ip, 'shodan': {'ports': [], 'status': 'error'}}), 200
 
 @app.route('/api/osint/bgp', methods=['GET'])
 @require_auth
@@ -437,10 +437,10 @@ def osint_bgp():
         from scanners.osint_utils import OSINTUtils
         result = OSINTUtils.get_bgp_info(query)
         
-        return jsonify({'query': query, 'bgp': result})
+        return jsonify({'query': query, 'bgp': result, 'status': 'ok'})
     except Exception as e:
         logger.error(f"BGP lookup error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'query': query, 'bgp': {'status': 'error', 'name': '—'}}), 200
 
 @app.route('/api/osint/mac', methods=['GET'])
 @require_auth
@@ -457,7 +457,7 @@ def osint_mac():
         return jsonify(result)
     except Exception as e:
         logger.error(f"MAC vendor lookup error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'mac': mac, 'vendor': '—', 'status': 'error'}), 200
 
 @app.route('/api/osint/github', methods=['GET'])
 @require_auth
@@ -474,7 +474,7 @@ def osint_github():
         return jsonify(result)
     except Exception as e:
         logger.error(f"GitHub lookup error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'username': user, 'status': 'error', 'public_repos': 0}), 200
 
 @app.route('/api/osint/leaks', methods=['GET'])
 @require_auth
@@ -491,7 +491,7 @@ def osint_leaks():
         return jsonify(result)
     except Exception as e:
         logger.error(f"Breach check error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'email': email, 'status': 'error', 'breached': False, 'breach_count': 0, 'breaches': []}), 200
 
 @app.route('/api/osint/cve', methods=['GET'])
 @require_auth
@@ -508,7 +508,7 @@ def osint_cve():
         return jsonify(result)
     except Exception as e:
         logger.error(f"CVE lookup error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'cve_id': cve, 'status': 'error', 'severity': '—', 'score': 0}), 200
 
 @app.route('/api/osint/sweep', methods=['GET'])
 @require_auth
@@ -530,7 +530,7 @@ def osint_sweep():
         })
     except Exception as e:
         logger.error(f"Sweep error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'target_ip': ip, 'status': 'error', 'cidr': 24}), 200
 
 @app.errorhandler(404)
 def not_found(error):
