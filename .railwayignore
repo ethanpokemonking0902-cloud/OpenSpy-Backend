@@ -1,0 +1,5 @@
+# This is a Python/Docker project, not Node.js
+node_modules/
+package.json
+package-lock.json
+yarn.lock
