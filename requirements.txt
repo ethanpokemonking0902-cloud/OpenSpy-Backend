@@ -1,0 +1,12 @@
+Flask==3.0.0
+Flask-CORS==4.0.0
+python-dotenv==1.0.0
+requests==2.31.0
+dnspython==2.4.2
+whois==0.9.7
+beautifulsoup4==4.12.2
+cryptography==41.0.7
+validators==0.22.0
+cachetools==5.3.2
+ratelimit==2.2.1
+gunicorn==21.2.0
