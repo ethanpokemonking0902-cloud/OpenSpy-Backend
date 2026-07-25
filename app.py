@@ -14,6 +14,16 @@ import hmac
 from datetime import datetime, timedelta
 import requests
 import json
+from models import (
+    create_or_update_user,
+    get_user,
+    save_scan,
+    get_user_scans,
+    star_scan,
+    get_user_state,
+    save_user_state,
+    add_recent_search
+)
 
 # Load environment variables
 load_dotenv()
@@ -148,6 +158,14 @@ def discord_callback():
         user_data = user_response.json()
         logger.info(f"User authenticated: {user_data.get('username')}")
         
+        # Save user to database
+        user = create_or_update_user(
+            user_data.get('id'),
+            user_data.get('username'),
+            user_data.get('email'),
+            user_data.get('avatar')
+        )
+        
         # Return tokens and API key
         return jsonify({
             'access_token': access_token,
@@ -203,6 +221,134 @@ def refresh_token():
     
     except Exception as e:
         logger.error(f"Token refresh error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# ═══════════════════════════════════════════════════════════════
+# USER DATA PERSISTENCE ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/user/profile', methods=['GET'])
+@require_auth
+def get_user_profile():
+    """Get user profile and app state"""
+    try:
+        auth_key = request.headers.get('X-Scanner-Key', '') or request.args.get('key', '')
+        discord_id = request.args.get('discord_id')
+        
+        if not discord_id:
+            return jsonify({'error': 'Discord ID required'}), 400
+        
+        user = get_user(discord_id)
+        if not user:
+            # Create new user profile
+            user = create_or_update_user(discord_id, '', '')
+        
+        user_state = get_user_state(discord_id)
+        
+        return jsonify({
+            'user': user.to_dict(),
+            'state': user_state.to_dict(),
+            'status': 'ok'
+        })
+    except Exception as e:
+        logger.error(f"Get user profile error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/user/state', methods=['POST'])
+@require_auth
+def save_app_state():
+    """Save user's app state (current page, filters, etc)"""
+    try:
+        data = request.get_json()
+        discord_id = data.get('discord_id')
+        state_data = data.get('state', {})
+        
+        if not discord_id:
+            return jsonify({'error': 'Discord ID required'}), 400
+        
+        user_state = save_user_state(discord_id, state_data)
+        
+        return jsonify({
+            'state': user_state.to_dict(),
+            'status': 'saved'
+        })
+    except Exception as e:
+        logger.error(f"Save app state error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/user/scans', methods=['GET'])
+@require_auth
+def get_scans():
+    """Get user's scan history"""
+    try:
+        discord_id = request.args.get('discord_id')
+        limit = int(request.args.get('limit', 50))
+        
+        if not discord_id:
+            return jsonify({'error': 'Discord ID required'}), 400
+        
+        scans = get_user_scans(discord_id, limit)
+        
+        return jsonify({
+            'scans': [scan.to_dict() for scan in scans],
+            'count': len(scans),
+            'status': 'ok'
+        })
+    except Exception as e:
+        logger.error(f"Get scans error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/user/scan/save', methods=['POST'])
+@require_auth
+def save_scan_result():
+    """Save a scan result"""
+    try:
+        data = request.get_json()
+        discord_id = data.get('discord_id')
+        tool_name = data.get('tool_name')
+        target = data.get('target')
+        result = data.get('result', {})
+        
+        if not discord_id or not tool_name or not target:
+            return jsonify({'error': 'Missing required fields'}), 400
+        
+        scan = save_scan(discord_id, tool_name, target, result)
+        add_recent_search(discord_id, tool_name, target)
+        
+        return jsonify({
+            'scan': scan.to_dict(),
+            'status': 'saved'
+        })
+    except Exception as e:
+        logger.error(f"Save scan error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/user/scan/star', methods=['POST'])
+@require_auth
+def toggle_star():
+    """Star/unstar a scan"""
+    try:
+        data = request.get_json()
+        scan_id = data.get('scan_id')
+        
+        if not scan_id:
+            return jsonify({'error': 'Scan ID required'}), 400
+        
+        scan = star_scan(scan_id)
+        
+        if not scan:
+            return jsonify({'error': 'Scan not found'}), 404
+        
+        return jsonify({
+            'scan': scan.to_dict(),
+            'status': 'updated'
+        })
+    except Exception as e:
+        logger.error(f"Star scan error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
