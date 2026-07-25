@@ -12,6 +12,8 @@ from functools import wraps
 import hashlib
 import hmac
 from datetime import datetime, timedelta
+import requests
+import json
 
 # Load environment variables
 load_dotenv()
@@ -32,6 +34,12 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max request
 SCANNER_KEY = os.getenv('OPENSPY_KEY', '')
 if not SCANNER_KEY:
     raise ValueError("OPENSPY_KEY environment variable not set!")
+
+# Discord OAuth configuration
+DISCORD_CLIENT_ID = os.getenv('DISCORD_CLIENT_ID', '')
+DISCORD_CLIENT_SECRET = os.getenv('DISCORD_CLIENT_SECRET', '')
+DISCORD_REDIRECT_URI = os.getenv('DISCORD_REDIRECT_URI', 'http://localhost:3000/auth/callback')
+DISCORD_API_BASE = 'https://discord.com/api/v10'
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +79,126 @@ def health():
         'timestamp': datetime.utcnow().isoformat(),
         'service': 'OpenSpy RECON Scanner'
     })
+
+# ═══════════════════════════════════════════════════════════════
+# CONFIG ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/config/apikey', methods=['GET'])
+def config_apikey():
+    """Get API key from environment (for authenticated frontend)"""
+    return jsonify({
+        'key': SCANNER_KEY,
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+# ═══════════════════════════════════════════════════════════════
+# DISCORD OAUTH ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/auth/discord/callback', methods=['POST'])
+def discord_callback():
+    """Exchange Discord authorization code for access token"""
+    try:
+        data = request.get_json()
+        code = data.get('code')
+        
+        if not code:
+            return jsonify({'error': 'Authorization code required'}), 400
+        
+        # Exchange code for access token
+        token_url = f'{DISCORD_API_BASE}/oauth2/token'
+        token_data = {
+            'client_id': DISCORD_CLIENT_ID,
+            'client_secret': DISCORD_CLIENT_SECRET,
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': DISCORD_REDIRECT_URI,
+            'scope': 'identify email'
+        }
+        
+        token_response = requests.post(token_url, data=token_data, timeout=10)
+        
+        if token_response.status_code != 200:
+            logger.error(f"Discord token exchange failed: {token_response.text}")
+            return jsonify({'error': 'Failed to exchange authorization code'}), 400
+        
+        token_json = token_response.json()
+        access_token = token_json.get('access_token')
+        refresh_token = token_json.get('refresh_token')
+        
+        if not access_token:
+            return jsonify({'error': 'No access token received'}), 400
+        
+        # Fetch user info from Discord
+        user_response = requests.get(
+            f'{DISCORD_API_BASE}/users/@me',
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=10
+        )
+        
+        if user_response.status_code != 200:
+            logger.error(f"Failed to fetch Discord user: {user_response.text}")
+            return jsonify({'error': 'Failed to fetch user info'}), 400
+        
+        user_data = user_response.json()
+        
+        # Return tokens and API key
+        return jsonify({
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'api_key': SCANNER_KEY,
+            'token_type': 'Bearer',
+            'user': {
+                'id': user_data.get('id'),
+                'username': user_data.get('username'),
+                'avatar': user_data.get('avatar'),
+                'email': user_data.get('email')
+            }
+        })
+    
+    except Exception as e:
+        logger.error(f"Discord callback error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    
+    except Exception as e:
+        logger.error(f"Discord callback error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/auth/refresh', methods=['POST'])
+def refresh_token():
+    """Refresh Discord access token using refresh token"""
+    try:
+        data = request.get_json()
+        refresh_token = data.get('refresh_token')
+        
+        if not refresh_token:
+            return jsonify({'error': 'Refresh token required'}), 400
+        
+        token_url = f'{DISCORD_API_BASE}/oauth2/token'
+        token_data = {
+            'client_id': DISCORD_CLIENT_ID,
+            'client_secret': DISCORD_CLIENT_SECRET,
+            'grant_type': 'refresh_token',
+            'refresh_token': refresh_token
+        }
+        
+        token_response = requests.post(token_url, data=token_data, timeout=10)
+        
+        if token_response.status_code != 200:
+            return jsonify({'error': 'Failed to refresh token'}), 400
+        
+        token_json = token_response.json()
+        
+        return jsonify({
+            'access_token': token_json.get('access_token'),
+            'refresh_token': token_json.get('refresh_token', refresh_token),
+            'token_type': 'Bearer'
+        })
+    
+    except Exception as e:
+        logger.error(f"Token refresh error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
 # QUICK SCAN (IP + geolocation)
