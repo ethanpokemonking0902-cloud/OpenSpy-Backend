@@ -18,7 +18,11 @@ load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+# Allow CORS from Netlify frontend and localhost
+CORS(app, resources={
+    r"/api/*": {"origins": ["https://openspy.netlify.app", "http://localhost:3000", "*"]},
+    r"/scan/*": {"origins": ["https://openspy.netlify.app", "http://localhost:3000", "*"]}
+})
 
 # Configuration
 app.config['JSON_SORT_KEYS'] = False
