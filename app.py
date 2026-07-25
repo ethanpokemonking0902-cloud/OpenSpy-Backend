@@ -103,6 +103,9 @@ def discord_callback():
         if not code:
             return jsonify({'error': 'Authorization code required'}), 400
         
+        logger.info(f"Discord callback received. Code: {code[:20]}...")
+        logger.info(f"Using redirect URI: {DISCORD_REDIRECT_URI}")
+        
         # Exchange code for access token
         token_url = f'{DISCORD_API_BASE}/oauth2/token'
         token_data = {
@@ -114,11 +117,15 @@ def discord_callback():
             'scope': 'identify email'
         }
         
+        logger.info(f"Exchanging code with Discord...")
         token_response = requests.post(token_url, data=token_data, timeout=10)
+        
+        logger.info(f"Discord response status: {token_response.status_code}")
+        logger.info(f"Discord response: {token_response.text}")
         
         if token_response.status_code != 200:
             logger.error(f"Discord token exchange failed: {token_response.text}")
-            return jsonify({'error': 'Failed to exchange authorization code'}), 400
+            return jsonify({'error': f'Failed to exchange authorization code: {token_response.text}'}), 400
         
         token_json = token_response.json()
         access_token = token_json.get('access_token')
@@ -139,6 +146,7 @@ def discord_callback():
             return jsonify({'error': 'Failed to fetch user info'}), 400
         
         user_data = user_response.json()
+        logger.info(f"User authenticated: {user_data.get('username')}")
         
         # Return tokens and API key
         return jsonify({
