@@ -71,8 +71,11 @@ class SSLScanner:
                     # Parse certificate
                     cert = x509.load_pem_x509_certificate(cert_pem.encode())
                     
-                    # Extract information
-                    subject = dict(x.rfc4514_string() for x in cert.subject)
+                    # Extract information - safely get subject and issuer
+                    try:
+                        subject = {attr.rfc4514_string(): str(attr.value) for attr in cert.subject}
+                    except:
+                        subject = {}
                     
                     # Get SANs
                     sans = []
@@ -82,8 +85,11 @@ class SSLScanner:
                     except:
                         pass
                     
-                    # Get issuers
-                    issuer = dict(x.rfc4514_string() for x in cert.issuer)
+                    # Get issuers - safely
+                    try:
+                        issuer = {attr.rfc4514_string(): str(attr.value) for attr in cert.issuer}
+                    except:
+                        issuer = {}
                     
                     result = {
                         'subject': subject,

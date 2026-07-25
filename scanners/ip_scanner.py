@@ -93,22 +93,39 @@ class IPScanner:
             return {'status': 'error'}
     
     def _get_asn(self, ip: str) -> dict:
-        """Get ASN information"""
+        """Get ASN information - gracefully handle failures"""
         try:
-            url = f"https://api.asn.cymru.com/v1/ip/{ip}.json"
-            resp = requests.get(url, timeout=self.timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data and isinstance(data, list) and len(data) > 0:
-                    return {
-                        'asn': data[0].get('asn'),
-                        'prefix': data[0].get('prefix'),
-                        'country_code': data[0].get('country_code'),
-                        'registry': data[0].get('registry'),
-                        'allocated': data[0].get('allocated'),
-                        'name': data[0].get('name'),
-                    }
+            # Try multiple ASN lookup services
+            urls = [
+                f"https://api.asn.cymru.com/v1/ip/{ip}.json",
+                f"https://ipinfo.io/{ip}/json?token=free",
+            ]
+            
+            for url in urls:
+                try:
+                    resp = requests.get(url, timeout=5)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, list) and len(data) > 0 and data[0].get('asn'):
+                            return {
+                                'asn': data[0].get('asn'),
+                                'prefix': data[0].get('prefix'),
+                                'country_code': data[0].get('country_code'),
+                                'registry': data[0].get('registry'),
+                                'allocated': data[0].get('allocated'),
+                                'name': data[0].get('name'),
+                            }
+                        elif 'asn' in data:
+                            return {
+                                'asn': data.get('asn'),
+                                'name': data.get('org', data.get('company', '')),
+                                'country_code': data.get('country'),
+                            }
+                except:
+                    continue
+            
+            # Return empty if all fail - don't crash
             return {}
         except Exception as e:
-            logger.error(f"ASN lookup error: {str(e)}")
+            logger.debug(f"ASN lookup error: {str(e)}")
             return {}
