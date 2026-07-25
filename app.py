@@ -303,8 +303,52 @@ def scan_vuln():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# ERROR HANDLERS
+# PHONE NUMBER INTELLIGENCE
 # ═══════════════════════════════════════════════════════════════
+
+@app.route('/scan/phone', methods=['GET'])
+@require_auth
+def scan_phone():
+    """
+    Phone number reconnaissance - geolocation, carrier, reverse lookup
+    Query params: target (phone number), key
+    """
+    try:
+        target = request.args.get('target', '').strip()
+        
+        if not target:
+            return jsonify({'error': 'Phone number required'}), 400
+        
+        from scanners.phone_scanner import PhoneScanner
+        scanner = PhoneScanner()
+        result = scanner.scan(target)
+        
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Phone scan error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/scan/phone-ping', methods=['GET'])
+@require_auth
+def ping_phone():
+    """
+    Ping phone number - check if active/reachable
+    Query params: target (phone number), key
+    """
+    try:
+        target = request.args.get('target', '').strip()
+        
+        if not target:
+            return jsonify({'error': 'Phone number required'}), 400
+        
+        from scanners.phone_scanner import PhoneScanner
+        scanner = PhoneScanner()
+        result = scanner.ping(target)
+        
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Phone ping error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.errorhandler(404)
 def not_found(error):
